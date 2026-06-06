@@ -1,33 +1,14 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from config import STYLE_OPTIONS, LIGHTING_OPTIONS, TOOL_OPTIONS, SAVE_CATEGORIES
+from config import STYLE_OPTIONS, SAVE_CATEGORIES
 
 
 def main_menu_keyboard():
     keyboard = [
-        [KeyboardButton("✨ Создать новый промпт")],
-        [KeyboardButton("🖼 Загрузить фото"), KeyboardButton("🎤 Голосовое описание")],
-        [KeyboardButton("🤖 Сгенерировать изображение")],
-        [KeyboardButton("💾 Сохранённые промпты и фото")],
-        [KeyboardButton("❓ Помощь")],
+        [KeyboardButton("📷 Создать промпт по фото")],
+        [KeyboardButton("✍️ Создать промпт по описанию")],
+        [KeyboardButton("💾 Сохранённые"), KeyboardButton("❓ Помощь")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
-def result_type_keyboard():
-    buttons = [
-        [InlineKeyboardButton("📸 Изображение", callback_data="result_image"),
-         InlineKeyboardButton("🎬 Видео", callback_data="result_video")],
-    ]
-    return InlineKeyboardMarkup(buttons)
-
-
-def output_type_keyboard():
-    buttons = [
-        [InlineKeyboardButton("📝 Только промпт", callback_data="output_prompt")],
-        [InlineKeyboardButton("🖼 Только изображение", callback_data="output_image")],
-        [InlineKeyboardButton("✨ Промпт + изображение", callback_data="output_both")],
-    ]
-    return InlineKeyboardMarkup(buttons)
 
 
 def style_keyboard():
@@ -37,44 +18,27 @@ def style_keyboard():
         if i + 1 < len(STYLE_OPTIONS):
             row.append(InlineKeyboardButton(STYLE_OPTIONS[i + 1], callback_data=f"style_{i+1}"))
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("✏️ Свой стиль", callback_data="style_custom")])
+    buttons.append([InlineKeyboardButton("✏️ Свой стиль (напишу сам)", callback_data="style_custom")])
     return InlineKeyboardMarkup(buttons)
 
 
-def lighting_keyboard():
-    buttons = []
-    for i in range(0, len(LIGHTING_OPTIONS), 2):
-        row = [InlineKeyboardButton(LIGHTING_OPTIONS[i], callback_data=f"lighting_{i}")]
-        if i + 1 < len(LIGHTING_OPTIONS):
-            row.append(InlineKeyboardButton(LIGHTING_OPTIONS[i + 1], callback_data=f"lighting_{i+1}"))
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("⏭ Пропустить", callback_data="lighting_skip")])
-    return InlineKeyboardMarkup(buttons)
-
-
-def tool_keyboard():
-    buttons = []
-    for i in range(0, len(TOOL_OPTIONS), 2):
-        row = [InlineKeyboardButton(TOOL_OPTIONS[i], callback_data=f"tool_{i}")]
-        if i + 1 < len(TOOL_OPTIONS):
-            row.append(InlineKeyboardButton(TOOL_OPTIONS[i + 1], callback_data=f"tool_{i+1}"))
-        buttons.append(row)
-    return InlineKeyboardMarkup(buttons)
-
-
-def prompt_ready_keyboard(has_image_option: bool = True):
+def prompt_ready_keyboard():
     buttons = [
+        [InlineKeyboardButton("✅ Всё верно", callback_data="action_approve"),
+         InlineKeyboardButton("✏️ Изменить", callback_data="action_edit")],
         [InlineKeyboardButton("📋 Скопировать промпт", callback_data="action_copy")],
+        [InlineKeyboardButton("💾 Сохранить промпт", callback_data="action_save_prompt")],
+        [InlineKeyboardButton("🆕 Начать заново", callback_data="action_restart")],
     ]
-    if has_image_option:
-        buttons.append([InlineKeyboardButton("🎨 Сгенерировать изображение", callback_data="action_generate_image")])
-    buttons += [
-        [InlineKeyboardButton("✏️ Исправить промпт", callback_data="action_edit"),
-         InlineKeyboardButton("🔄 Другой вариант", callback_data="action_another")],
-        [InlineKeyboardButton("💾 Сохранить промпт", callback_data="action_save_prompt"),
-         InlineKeyboardButton("🖼 Сохранить фото", callback_data="action_save_image")],
-        [InlineKeyboardButton("🆕 Начать заново", callback_data="action_restart"),
-         InlineKeyboardButton("✅ Завершить", callback_data="action_finish")],
+    return InlineKeyboardMarkup(buttons)
+
+
+def generate_choice_keyboard():
+    buttons = [
+        [InlineKeyboardButton("🤖 Сгенерировать через DALL-E", callback_data="gen_dalle")],
+        [InlineKeyboardButton("✨ Сгенерировать через Gemini", callback_data="gen_gemini")],
+        [InlineKeyboardButton("📋 Только скопировать промпт", callback_data="gen_copy")],
+        [InlineKeyboardButton("🆕 Начать заново", callback_data="action_restart")],
     ]
     return InlineKeyboardMarkup(buttons)
 
@@ -83,8 +47,7 @@ def after_image_keyboard():
     buttons = [
         [InlineKeyboardButton("💾 Сохранить изображение", callback_data="action_save_image")],
         [InlineKeyboardButton("✏️ Исправить и перегенерировать", callback_data="action_edit")],
-        [InlineKeyboardButton("🆕 Начать заново", callback_data="action_restart"),
-         InlineKeyboardButton("✅ Завершить", callback_data="action_finish")],
+        [InlineKeyboardButton("🆕 Начать заново", callback_data="action_restart")],
     ]
     return InlineKeyboardMarkup(buttons)
 
@@ -98,10 +61,10 @@ def save_category_keyboard():
 
 def saved_items_keyboard(items):
     buttons = []
-    for item in items[:10]:  # Show max 10
+    for item in items[:10]:
         label = f"[{item['category']}] {item['title'][:30]} — {item['created_at'][:10]}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"view_saved_{item['id']}")])
-    buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="action_restart")])
+    buttons.append([InlineKeyboardButton("🔙 Главное меню", callback_data="action_restart")])
     return InlineKeyboardMarkup(buttons)
 
 
