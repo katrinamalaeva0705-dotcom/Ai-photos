@@ -4,50 +4,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-
 if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не найден в переменных окружения.")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY не найден в переменных окружения.")
+    raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env файле")
 
-# Directories
-DOWNLOADS_DIR = "downloads"
-SAVED_IMAGES_DIR = "saved_images"
+# Timezone (change to your timezone if needed)
+TIMEZONE = "Europe/Moscow"
 
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-os.makedirs(SAVED_IMAGES_DIR, exist_ok=True)
+# Morning reminder time
+MORNING_HOUR = 9
+MORNING_MINUTE = 0
 
-# Conversation states
+# States
 (
-    STATE_MAIN_MENU,
-    STATE_AWAIT_PHOTO,
-    STATE_AWAIT_DESCRIPTION,
-    STATE_QUESTIONS_STYLE,
-    STATE_QUESTIONS_STYLE_CUSTOM,
-    STATE_PROMPT_READY,
-    STATE_AWAIT_CORRECTION,
-    STATE_SAVED_MENU,
-    STATE_SAVE_CATEGORY,
-) = range(9)
-
-STYLE_OPTIONS = [
-    "Реалистичный",
-    "Кинематографический",
-    "Люкс / Премиум",
-    "Предметная съёмка",
-    "Недвижимость",
-    "Instagram контент",
-    "Коммерческая реклама",
-    "Минимализм",
-]
-
-SAVE_CATEGORIES = [
-    "Недвижимость",
-    "Предметная съёмка",
-    "Instagram",
-    "Видео",
-    "Личное",
-    "Другое",
-]
+    STATE_IDLE,
+    STATE_ADD_SINGLE,
+    STATE_ADD_LIST,
+    STATE_DELETE,
+) = range(4)

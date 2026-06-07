@@ -1,258 +1,160 @@
-import os
 import logging
-import shutil
-from datetime import datetime
+from datetime import datetime, date
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.constants import ChatAction
 
 import database as db
-import openai_client as ai
-from keyboards import (
-    main_menu_keyboard, style_keyboard, prompt_ready_keyboard,
-    generate_choice_keyboard, after_image_keyboard,
-    save_category_keyboard, saved_items_keyboard, saved_item_actions_keyboard,
-)
-from config import (
-    STATE_MAIN_MENU, STATE_AWAIT_PHOTO, STATE_AWAIT_DESCRIPTION,
-    STATE_QUESTIONS_STYLE, STATE_QUESTIONS_STYLE_CUSTOM,
-    STATE_PROMPT_READY, STATE_AWAIT_CORRECTION, STATE_SAVE_CATEGORY,
-    DOWNLOADS_DIR, SAVED_IMAGES_DIR, STYLE_OPTIONS, SAVE_CATEGORIES,
-)
+import parser as p
+from calendar_image import generate_calendar_image, generate_today_image
+from keyboards import main_menu, tasks_list_keyboard, confirm_delete_keyboard
+from config import STATE_IDLE, STATE_ADD_SINGLE, STATE_ADD_LIST, STATE_DELETE
 
 logger = logging.getLogger(__name__)
 
-WELCOME_TEXT = (
-    "👋 *Привет! Я ваш AI-ассистент для создания промптов и изображений.*\n\n"
-    "Выберите с чего начать:"
+WELCOME = (
+    "👋 *Привет! Я ваш личный календарь-напоминалка.*\n\n"
+    "Я умею:\n"
+    "• Принимать задачи с датой и временем\n"
+    "• Напоминать утром о задачах на день\n"
+    "• Напоминать за 1 час до каждой задачи\n"
+    "• Показывать красивый календарь месяца\n\n"
+    "Выберите действие 👇"
 )
 
-HELP_TEXT = (
-    "❓ *Как пользоваться ботом:*\n\n"
-    "📷 *По фото* — загрузите фото, бот его проанализирует и создаст готовый промпт.\n\n"
-    "✍️ *По описанию* — опишите текстом или голосом что хотите создать.\n\n"
-    "После создания промпта вы можете:\n"
-    "• Скопировать его и вставить в любой AI-инструмент\n"
-    "• Сгенерировать изображение прямо в боте через DALL-E или Gemini\n"
-    "• Исправить промпт если что-то не так\n"
-    "• Сохранить в личную библиотеку\n\n"
-    "💡 *Промпты создаются на английском* — так AI работает точнее."
+HELP_ADD = (
+    "✍️ *Как добавить задачу:*\n\n"
+    "Напишите дату и задачу в любом формате:\n\n"
+    "• `15 июня 10:00 Встреча с клиентом`\n"
+    "• `20.06 14:30 Звонок партнёру`\n"
+    "• `сегодня 18:00 Тренировка`\n"
+    "• `завтра 09:00 Планёрка`\n"
+    "• `15/07/2025 Конференция`\n\n"
+    "Время необязательно — если не укажете, напомню только утром."
+)
+
+HELP_LIST = (
+    "📋 *Как добавить список задач:*\n\n"
+    "Отправьте несколько задач, каждую на новой строке:\n\n"
+    "`15 июня 10:00 Встреча`\n"
+    "`16 июня 14:00 Презентация`\n"
+    "`20 июня Дедлайн проекта`\n"
+    "`завтра 09:00 Планёрка`"
 )
 
 
-def get_session(context: ContextTypes.DEFAULT_TYPE) -> dict:
-    if "session" not in context.user_data:
-        context.user_data["session"] = {}
-    return context.user_data["session"]
+def get_state(context):
+    return context.user_data.get("state", STATE_IDLE)
 
 
-def reset_session(context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["session"] = {}
-    context.user_data["state"] = STATE_MAIN_MENU
+def set_state(context, state):
+    context.user_data["state"] = state
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.init_db()
-    reset_session(context)
-    await update.message.reply_text(
-        WELCOME_TEXT,
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(),
-    )
+    set_state(context, STATE_IDLE)
+    await update.message.reply_text(WELCOME, parse_mode="Markdown", reply_markup=main_menu())
 
 
 # ─── Text handler ─────────────────────────────────────────────────────────────
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    state = context.user_data.get("state", STATE_MAIN_MENU)
+    state = get_state(context)
 
-    # ── Main menu buttons ──
-    if text == "📷 Создать промпт по фото":
-        reset_session(context)
-        context.user_data["state"] = STATE_AWAIT_PHOTO
-        await update.message.reply_text(
-            "📷 *Загрузите фото-референс.*\n\n"
-            "Я его проанализирую и создам готовый промпт с сохранением всех важных деталей.",
-            parse_mode="Markdown",
-        )
+    # ── Menu buttons ──
+    if text == "➕ Добавить задачу":
+        set_state(context, STATE_ADD_SINGLE)
+        await update.message.reply_text(HELP_ADD, parse_mode="Markdown")
         return
 
-    if text == "✍️ Создать промпт по описанию":
-        reset_session(context)
-        context.user_data["state"] = STATE_AWAIT_DESCRIPTION
-        await update.message.reply_text(
-            "✍️ *Опишите что хотите создать.*\n\n"
-            "Напишите текстом или отправьте голосовое сообщение 🎤\n\n"
-            "Например: _«Рекламное фото крема на фоне мраморного стола, стиль люкс»_",
-            parse_mode="Markdown",
-        )
+    if text == "📋 Добавить список":
+        set_state(context, STATE_ADD_LIST)
+        await update.message.reply_text(HELP_LIST, parse_mode="Markdown")
         return
 
-    if text == "💾 Сохранённые":
-        await show_saved_list(update, context)
+    if text == "📅 Сегодня":
+        await show_today(update, context)
         return
 
-    if text == "❓ Помощь":
-        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    if text == "🗓 Календарь месяца":
+        await show_month_calendar(update, context)
         return
 
-    # ── State-based ──
-    if state == STATE_AWAIT_DESCRIPTION:
-        session = get_session(context)
-        session["description"] = text
-        context.user_data["state"] = STATE_QUESTIONS_STYLE
-        await update.message.reply_text(
-            "🎨 *Выберите стиль:*",
-            parse_mode="Markdown",
-            reply_markup=style_keyboard(),
-        )
+    if text == "📆 Ближайшие задачи":
+        await show_upcoming(update, context)
         return
 
-    if state == STATE_AWAIT_PHOTO:
-        # User sent text instead of photo
-        session = get_session(context)
-        session["description"] = text
-        context.user_data["state"] = STATE_QUESTIONS_STYLE
-        await update.message.reply_text(
-            "✅ Описание принято.\n\n🎨 *Выберите стиль:*",
-            parse_mode="Markdown",
-            reply_markup=style_keyboard(),
-        )
+    if text == "🗑 Удалить задачу":
+        await start_delete(update, context)
         return
 
-    if state == STATE_QUESTIONS_STYLE_CUSTOM:
-        session = get_session(context)
-        session["style"] = text
-        await _run_prompt_generation(update, context)
-        return
-
-    if state == STATE_AWAIT_CORRECTION:
-        session = get_session(context)
-        original = session.get("prompt", "")
-        msg = await update.message.reply_text("⏳ Обновляю промпт...")
-        try:
-            updated = await ai.refine_prompt(original, text)
-            session["prompt"] = updated
-            await msg.edit_text(
-                f"✅ *Промпт обновлён:*\n\n```\n{updated}\n```",
-                parse_mode="Markdown",
-                reply_markup=prompt_ready_keyboard(),
-            )
-        except Exception as e:
-            logger.error(f"Refine error: {e}")
-            await msg.edit_text(
-                f"❌ Ошибка обновления промпта.\n\n*Причина:* `{str(e)[:300]}`",
+    # ── State: adding single task ──
+    if state == STATE_ADD_SINGLE:
+        tasks = p.parse_tasks(text)
+        if not tasks:
+            await update.message.reply_text(
+                "❌ Не смог распознать дату. Попробуйте так:\n\n"
+                "`15 июня 10:00 Встреча с клиентом`\n"
+                "`завтра 14:00 Звонок`\n"
+                "`20.06 09:00 Встреча`",
                 parse_mode="Markdown",
             )
+            return
+
+        task = tasks[0]
+        user_id = update.effective_user.id
+        task_id = db.add_task(user_id, task["title"], task["date"], task["time"])
+
+        # Schedule reminder if bot has scheduler
+        if "scheduler" in context.bot_data:
+            _schedule_task_reminder(context.bot_data["scheduler"], task, task_id, user_id, context.bot)
+
+        date_ru = p.format_date_ru(task["date"])
+        time_str = f" в {task['time']}" if task["time"] else ""
+        await update.message.reply_text(
+            f"✅ *Задача добавлена!*\n\n"
+            f"📅 {date_ru}{time_str}\n"
+            f"📌 {task['title']}\n\n"
+            f"{'🔔 Напомню за 1 час до начала.' if task['time'] else '🔔 Напомню утром в 9:00.'}",
+            parse_mode="Markdown",
+            reply_markup=main_menu(),
+        )
+        set_state(context, STATE_IDLE)
+        return
+
+    # ── State: adding list ──
+    if state == STATE_ADD_LIST:
+        tasks = p.parse_tasks(text)
+        if not tasks:
+            await update.message.reply_text(
+                "❌ Не нашёл задач с датами. Каждая строка должна начинаться с даты:\n\n"
+                "`15 июня 10:00 Встреча`\n"
+                "`16 июня 14:00 Звонок`",
+                parse_mode="Markdown",
+            )
+            return
+
+        user_id = update.effective_user.id
+        added = []
+        for task in tasks:
+            task_id = db.add_task(user_id, task["title"], task["date"], task["time"])
+            if "scheduler" in context.bot_data:
+                _schedule_task_reminder(context.bot_data["scheduler"], task, task_id, user_id, context.bot)
+            date_ru = p.format_date_ru(task["date"])
+            time_str = f" {task['time']}" if task["time"] else ""
+            added.append(f"• {date_ru}{time_str} — {task['title']}")
+
+        msg = f"✅ *Добавлено задач: {len(added)}*\n\n" + "\n".join(added)
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_menu())
+        set_state(context, STATE_IDLE)
         return
 
     # Fallback
-    await update.message.reply_text(
-        "Выберите действие из меню 👇",
-        reply_markup=main_menu_keyboard(),
-    )
-
-
-# ─── Voice handler ────────────────────────────────────────────────────────────
-
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = context.user_data.get("state", STATE_MAIN_MENU)
-
-    if state not in (STATE_AWAIT_DESCRIPTION, STATE_AWAIT_PHOTO, STATE_MAIN_MENU):
-        await update.message.reply_text("Сначала выберите действие из меню 👇", reply_markup=main_menu_keyboard())
-        return
-
-    msg = await update.message.reply_text("🎤 Расшифровываю голосовое сообщение...")
-
-    voice = update.message.voice
-    file = await context.bot.get_file(voice.file_id)
-    file_path = os.path.join(DOWNLOADS_DIR, f"{update.effective_user.id}_voice.ogg")
-    await file.download_to_drive(file_path)
-
-    try:
-        text = await ai.transcribe_voice(file_path)
-    except Exception as e:
-        logger.error(f"Voice error: {e}")
-        await msg.edit_text(
-            f"❌ *Не удалось расшифровать голосовое.*\n\n"
-            f"Причина: `{str(e)[:300]}`\n\n"
-            "Попробуйте написать текстом.",
-            parse_mode="Markdown",
-        )
-        return
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-    session = get_session(context)
-    session["description"] = text
-    context.user_data["state"] = STATE_QUESTIONS_STYLE
-
-    await msg.edit_text(
-        f"✅ *Расшифровано:*\n_{text}_\n\n🎨 *Выберите стиль:*",
-        parse_mode="Markdown",
-        reply_markup=style_keyboard(),
-    )
-
-
-# ─── Photo handler ────────────────────────────────────────────────────────────
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = context.user_data.get("state", STATE_MAIN_MENU)
-
-    if state == STATE_MAIN_MENU:
-        # Auto-start photo flow
-        context.user_data["state"] = STATE_AWAIT_PHOTO
-
-    msg = await update.message.reply_text("🔍 Анализирую фото...")
-    await update.message.reply_chat_action(ChatAction.TYPING)
-
-    # Download photo
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    file_path = os.path.join(DOWNLOADS_DIR, f"{update.effective_user.id}_ref.jpg")
-
-    try:
-        await file.download_to_drive(file_path)
-    except Exception as e:
-        await msg.edit_text(f"❌ Не удалось скачать фото: `{e}`", parse_mode="Markdown")
-        return
-
-    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-        await msg.edit_text("❌ Фото пустое или не загрузилось. Попробуйте ещё раз.")
-        return
-
-    # Analyze photo
-    try:
-        analysis = await ai.analyze_image(file_path)
-    except Exception as e:
-        logger.error(f"Image analysis error: {e}")
-        await msg.edit_text(
-            f"❌ *Не удалось проанализировать фото.*\n\n"
-            f"*Причина:* `{str(e)[:400]}`\n\n"
-            "Проверьте что ключ OpenAI активен и имеет доступ к GPT-4o.",
-            parse_mode="Markdown",
-        )
-        return
-
-    session = get_session(context)
-    session["image_analysis"] = analysis
-    session["ref_image_path"] = file_path
-
-    # If caption, use as description
-    if update.message.caption:
-        session["description"] = update.message.caption
-
-    await msg.edit_text(
-        f"✅ *Фото проанализировано:*\n\n_{analysis[:600]}_\n\n"
-        "🎨 *Выберите стиль для промпта:*",
-        parse_mode="Markdown",
-        reply_markup=style_keyboard(),
-    )
-    context.user_data["state"] = STATE_QUESTIONS_STYLE
+    set_state(context, STATE_IDLE)
+    await update.message.reply_text("Выберите действие из меню 👇", reply_markup=main_menu())
 
 
 # ─── Callback handler ─────────────────────────────────────────────────────────
@@ -261,314 +163,180 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    session = get_session(context)
+    user_id = query.from_user.id
 
-    # ── Style ──
-    if data.startswith("style_"):
-        if data == "style_custom":
-            context.user_data["state"] = STATE_QUESTIONS_STYLE_CUSTOM
-            await query.edit_message_text("✏️ Напишите свой стиль:", parse_mode="Markdown")
+    if data == "del_cancel":
+        await query.edit_message_text("Отмена.")
+        set_state(context, STATE_IDLE)
+        return
+
+    if data.startswith("del_"):
+        task_id = int(data.split("_")[1])
+        task = db.get_task_by_id(task_id, user_id)
+        if not task:
+            await query.edit_message_text("❌ Задача не найдена.")
             return
-        idx = int(data.split("_")[1])
-        session["style"] = STYLE_OPTIONS[idx]
+        date_ru = p.format_date_ru(task["task_date"])
+        time_str = f" в {task['task_time']}" if task["task_time"] else ""
         await query.edit_message_text(
-            f"✅ Стиль: *{session['style']}*\n\n⏳ Генерирую промпт...",
-            parse_mode="Markdown",
-        )
-        await _run_prompt_generation_callback(query, context)
-        return
-
-    # ── Prompt approved → offer generation ──
-    if data == "action_approve":
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text(
-            "🎨 *Хотите сгенерировать изображение?*\n\n"
-            "Выберите инструмент или просто скопируйте промпт:",
-            parse_mode="Markdown",
-            reply_markup=generate_choice_keyboard(),
+            f"🗑 Удалить задачу?\n\n📅 {date_ru}{time_str}\n📌 {task['title']}",
+            reply_markup=confirm_delete_keyboard(task_id),
         )
         return
 
-    # ── Copy prompt ──
-    if data == "action_copy":
-        prompt = session.get("prompt", "")
-        await query.message.reply_text(
-            f"📋 *Готовый промпт — скопируйте:*\n\n```\n{prompt}\n```",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ── Edit prompt ──
-    if data == "action_edit":
-        context.user_data["state"] = STATE_AWAIT_CORRECTION
-        await query.message.reply_text(
-            "✏️ *Напишите что нужно изменить:*\n\n"
-            "Например: «сделай освещение мягче», «добавь закат», «убери людей»",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ── Generate DALL-E ──
-    if data == "gen_dalle":
-        await query.edit_message_reply_markup(reply_markup=None)
-        msg = await query.message.reply_text("🤖 Генерирую через DALL-E... (~20-30 сек)")
-        prompt = session.get("prompt", "")
-        try:
-            image_bytes = await ai.generate_image_dalle(prompt)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            image_path = os.path.join(DOWNLOADS_DIR, f"{query.from_user.id}_{ts}.jpg")
-            with open(image_path, "wb") as f:
-                f.write(image_bytes)
-            session["generated_image_path"] = image_path
-            await msg.delete()
-            await query.message.reply_photo(
-                photo=image_bytes,
-                caption="🖼 *Готово! Изображение сгенерировано через DALL-E 3.*",
-                parse_mode="Markdown",
-                reply_markup=after_image_keyboard(),
-            )
-        except Exception as e:
-            logger.error(f"DALL-E error: {e}")
-            await msg.edit_text(
-                f"❌ *Ошибка генерации через DALL-E.*\n\n"
-                f"`{str(e)[:400]}`\n\n"
-                "Попробуйте скопировать промпт и вставить в ChatGPT вручную.",
-                parse_mode="Markdown",
-            )
-        return
-
-    # ── Generate Gemini ──
-    if data == "gen_gemini":
-        await query.edit_message_reply_markup(reply_markup=None)
-        from config import GOOGLE_API_KEY
-        if not GOOGLE_API_KEY:
-            prompt = session.get("prompt", "")
-            await query.message.reply_text(
-                "⚠️ *Ключ Google API не настроен.*\n\n"
-                "Чтобы генерировать через Gemini, добавьте `GOOGLE_API_KEY` в файл `.env`.\n\n"
-                "📋 *Пока что — вот промпт для ручного использования в Gemini:*\n\n"
-                f"```\n{prompt}\n```\n\n"
-                "Откройте [gemini.google.com](https://gemini.google.com), вставьте промпт и попросите создать изображение.",
-                parse_mode="Markdown",
-            )
-            return
-
-        msg = await query.message.reply_text("✨ Генерирую через Gemini... (~20-30 сек)")
-        prompt = session.get("prompt", "")
-        try:
-            image_bytes = await ai.generate_image_gemini(prompt)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            image_path = os.path.join(DOWNLOADS_DIR, f"{query.from_user.id}_{ts}.jpg")
-            with open(image_path, "wb") as f:
-                f.write(image_bytes)
-            session["generated_image_path"] = image_path
-            await msg.delete()
-            await query.message.reply_photo(
-                photo=image_bytes,
-                caption="🖼 *Готово! Изображение сгенерировано через Gemini.*",
-                parse_mode="Markdown",
-                reply_markup=after_image_keyboard(),
-            )
-        except Exception as e:
-            logger.error(f"Gemini error: {e}")
-            await msg.edit_text(
-                f"❌ *Ошибка генерации через Gemini.*\n\n`{str(e)[:300]}`",
-                parse_mode="Markdown",
-            )
-        return
-
-    # ── Copy only ──
-    if data == "gen_copy":
-        prompt = session.get("prompt", "")
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text(
-            f"📋 *Промпт готов — скопируйте и вставьте в нужный инструмент:*\n\n"
-            f"```\n{prompt}\n```\n\n"
-            "💡 Вставьте в ChatGPT, Midjourney, Gemini, Kling или другой инструмент.",
-            parse_mode="Markdown",
-        )
-        return
-
-    # ── Save prompt ──
-    if data == "action_save_prompt":
-        session["saving_what"] = "prompt"
-        context.user_data["state"] = STATE_SAVE_CATEGORY
-        await query.message.reply_text(
-            "📂 *Выберите категорию:*",
-            parse_mode="Markdown",
-            reply_markup=save_category_keyboard(),
-        )
-        return
-
-    # ── Save image ──
-    if data == "action_save_image":
-        image_path = session.get("generated_image_path")
-        if not image_path:
-            await query.message.reply_text("⚠️ Изображение ещё не сгенерировано.")
-            return
-        session["saving_what"] = "image"
-        context.user_data["state"] = STATE_SAVE_CATEGORY
-        await query.message.reply_text(
-            "📂 *Выберите категорию:*",
-            parse_mode="Markdown",
-            reply_markup=save_category_keyboard(),
-        )
-        return
-
-    # ── Save category chosen ──
-    if data.startswith("savecat_"):
-        idx = int(data.split("_")[1])
-        category = SAVE_CATEGORIES[idx]
-        prompt = session.get("prompt", "")
-        title = (session.get("description") or session.get("image_analysis") or "Без названия")[:50]
-        user_id = query.from_user.id
-
-        saved_img = None
-        if session.get("saving_what") == "image":
-            image_path = session.get("generated_image_path")
-            if image_path and os.path.exists(image_path):
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                saved_img = os.path.join(SAVED_IMAGES_DIR, f"{user_id}_{ts}.jpg")
-                shutil.copy2(image_path, saved_img)
-
-        db.save_item(user_id, title, category, prompt, saved_img)
-        await query.message.reply_text(
-            f"✅ Сохранено в категорию *{category}*!",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-
-    # ── Restart ──
-    if data == "action_restart":
-        reset_session(context)
-        await query.message.reply_text(
-            "🆕 Начинаем заново!\n\nВыберите действие:",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-
-    # ── Saved list ──
-    if data == "go_saved_list":
-        items = db.get_saved_items(query.from_user.id)
-        if not items:
-            await query.edit_message_text("💾 Нет сохранённых элементов.")
-            return
-        await query.edit_message_text(
-            f"💾 *Сохранённые ({len(items)}):*",
-            parse_mode="Markdown",
-            reply_markup=saved_items_keyboard(items),
-        )
-        return
-
-    if data.startswith("view_saved_"):
-        item_id = int(data.split("_")[2])
-        item = db.get_saved_item(item_id, query.from_user.id)
-        if not item:
-            await query.message.reply_text("❌ Не найдено.")
-            return
-        await query.edit_message_text(
-            f"📁 *{item['title']}*\n🗂 {item['category']} | 📅 {item['created_at']}",
-            parse_mode="Markdown",
-            reply_markup=saved_item_actions_keyboard(item_id, bool(item["image_path"])),
-        )
-        return
-
-    if data.startswith("saved_prompt_"):
-        item_id = int(data.split("_")[2])
-        item = db.get_saved_item(item_id, query.from_user.id)
-        if item:
-            await query.message.reply_text(
-                f"📋 *Промпт:*\n\n```\n{item['prompt_text']}\n```",
-                parse_mode="Markdown",
-            )
-        return
-
-    if data.startswith("saved_img_"):
-        item_id = int(data.split("_")[2])
-        item = db.get_saved_item(item_id, query.from_user.id)
-        if item and item["image_path"] and os.path.exists(item["image_path"]):
-            with open(item["image_path"], "rb") as f:
-                await query.message.reply_photo(photo=f)
-        else:
-            await query.message.reply_text("❌ Изображение не найдено.")
-        return
-
-    if data.startswith("saved_del_"):
-        item_id = int(data.split("_")[2])
-        db.delete_saved_item(item_id, query.from_user.id)
-        await query.edit_message_text("🗑 Удалено.")
+    if data.startswith("confirm_del_"):
+        task_id = int(data.split("_")[2])
+        db.delete_task(task_id, user_id)
+        await query.edit_message_text("✅ Задача удалена.")
         return
 
 
-# ─── Prompt generation helpers ────────────────────────────────────────────────
+# ─── Today ────────────────────────────────────────────────────────────────────
 
-async def _run_prompt_generation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Called when user typed custom style."""
-    session = get_session(context)
-    msg = await update.message.reply_text("⏳ Генерирую профессиональный промпт...")
-    try:
-        prompt = await ai.generate_prompt(session)
-        session["prompt"] = prompt
-        context.user_data["state"] = STATE_PROMPT_READY
-        await msg.edit_text(
-            f"✅ *Готовый промпт:*\n\n```\n{prompt}\n```",
-            parse_mode="Markdown",
-            reply_markup=prompt_ready_keyboard(),
-        )
-    except Exception as e:
-        logger.error(f"Prompt gen error: {e}")
-        await msg.edit_text(
-            f"❌ *Ошибка генерации промпта.*\n\n"
-            f"`{str(e)[:400]}`\n\n"
-            "Возможные причины:\n"
-            "• Недостаточно средств на аккаунте OpenAI\n"
-            "• Неверный API ключ\n"
-            "• Нет доступа к модели GPT-4o\n\n"
-            "Проверьте ключ на [platform.openai.com](https://platform.openai.com/api-keys)",
+async def show_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    today = date.today()
+    tasks = db.get_tasks_for_date(user_id, today.strftime("%Y-%m-%d"))
+    tasks = [dict(t) for t in tasks]
+
+    if not tasks:
+        text = f"📅 *Сегодня, {p.format_date_ru(today.strftime('%Y-%m-%d'))}*\n\n✅ Задач нет — свободный день!"
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu())
+    else:
+        # Send calendar image for today
+        img_bytes = generate_today_image(tasks, today)
+        lines = [f"📅 *Сегодня — {p.format_date_ru(today.strftime('%Y-%m-%d'))}*\n"]
+        for t in tasks:
+            time_str = f"🕐 {t['task_time']} " if t["task_time"] else "• "
+            lines.append(f"{time_str}{t['title']}")
+        await update.message.reply_photo(
+            photo=img_bytes,
+            caption="\n".join(lines),
             parse_mode="Markdown",
         )
 
 
-async def _run_prompt_generation_callback(query, context: ContextTypes.DEFAULT_TYPE):
-    """Called after style selected via inline button."""
-    session = get_session(context)
-    try:
-        prompt = await ai.generate_prompt(session)
-        session["prompt"] = prompt
-        context.user_data["state"] = STATE_PROMPT_READY
-        await query.edit_message_text(
-            f"✅ *Готовый промпт:*\n\n```\n{prompt}\n```",
-            parse_mode="Markdown",
-            reply_markup=prompt_ready_keyboard(),
-        )
-    except Exception as e:
-        logger.error(f"Prompt gen error: {e}")
-        await query.edit_message_text(
-            f"❌ *Ошибка генерации промпта.*\n\n"
-            f"`{str(e)[:400]}`\n\n"
-            "Возможные причины:\n"
-            "• Недостаточно средств на аккаунте OpenAI\n"
-            "• Неверный API ключ\n"
-            "• Нет доступа к модели GPT-4o\n\n"
-            "Проверьте: [platform.openai.com](https://platform.openai.com)",
-            parse_mode="Markdown",
-        )
+# ─── Month calendar ───────────────────────────────────────────────────────────
 
+async def show_month_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    now = datetime.now()
+    tasks = db.get_month_tasks(user_id, now.year, now.month)
+    tasks = [dict(t) for t in tasks]
 
-# ─── Saved list ───────────────────────────────────────────────────────────────
+    task_count = len(tasks)
+    img_bytes = generate_calendar_image(tasks, now.year, now.month)
 
-async def show_saved_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    items = db.get_saved_items(update.effective_user.id)
-    if not items:
-        await update.message.reply_text(
-            "💾 *Пока ничего не сохранено.*\n\nСоздайте промпт и сохраните его!",
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-    await update.message.reply_text(
-        f"💾 *Сохранённые промпты и изображения ({len(items)}):*",
-        parse_mode="Markdown",
-        reply_markup=saved_items_keyboard(items),
+    MONTH_NAMES = [
+        "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+    ]
+    caption = (
+        f"🗓 *{MONTH_NAMES[now.month]} {now.year}*\n"
+        f"Задач в месяце: {task_count}"
     )
+    await update.message.reply_photo(
+        photo=img_bytes,
+        caption=caption,
+        parse_mode="Markdown",
+    )
+
+
+# ─── Upcoming tasks ───────────────────────────────────────────────────────────
+
+async def show_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    today = date.today().strftime("%Y-%m-%d")
+    tasks = db.get_upcoming_tasks(user_id, today, days=30)
+
+    if not tasks:
+        await update.message.reply_text(
+            "📆 *Ближайших задач нет.*\n\nДобавьте задачу через ➕",
+            parse_mode="Markdown",
+            reply_markup=main_menu(),
+        )
+        return
+
+    lines = ["📆 *Ближайшие задачи:*\n"]
+    prev_date = None
+    for task in tasks:
+        if task["task_date"] != prev_date:
+            day_str = p.format_weekday_ru(task["task_date"])
+            lines.append(f"\n📅 *{p.format_date_ru(task['task_date'])} ({day_str})*")
+            prev_date = task["task_date"]
+        time_str = f"🕐 {task['task_time']}  " if task["task_time"] else "• "
+        lines.append(f"  {time_str}{task['title']}")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=main_menu(),
+    )
+
+
+# ─── Delete ───────────────────────────────────────────────────────────────────
+
+async def start_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    today = date.today().strftime("%Y-%m-%d")
+    tasks = db.get_upcoming_tasks(user_id, today)
+
+    if not tasks:
+        await update.message.reply_text(
+            "📭 Нет задач для удаления.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    await update.message.reply_text(
+        "🗑 *Выберите задачу для удаления:*",
+        parse_mode="Markdown",
+        reply_markup=tasks_list_keyboard([dict(t) for t in tasks[:20]]),
+    )
+    set_state(context, STATE_DELETE)
+
+
+# ─── Scheduler helper ─────────────────────────────────────────────────────────
+
+def _schedule_task_reminder(scheduler, task: dict, task_id: int, user_id: int, bot):
+    """Schedule a 1-hour-before reminder for a task with time."""
+    from datetime import datetime, timedelta
+    import pytz
+    from config import TIMEZONE
+
+    if not task.get("time"):
+        return
+
+    tz = pytz.timezone(TIMEZONE)
+    task_dt_str = f"{task['date']} {task['time']}"
+    try:
+        task_dt = tz.localize(datetime.strptime(task_dt_str, "%Y-%m-%d %H:%M"))
+    except Exception:
+        return
+
+    remind_at = task_dt - timedelta(hours=1)
+    now = datetime.now(tz)
+
+    if remind_at <= now:
+        return
+
+    job_id = f"task_{task_id}_user_{user_id}"
+
+    async def send_reminder(bot=bot, user_id=user_id, title=task["title"], time_str=task["time"], date_str=task["date"]):
+        date_ru = p.format_date_ru(date_str)
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"⏰ *Напоминание!*\n\nЧерез 1 час:\n📌 {title}\n🕐 {time_str} | {date_ru}",
+            parse_mode="Markdown",
+        )
+
+    try:
+        scheduler.add_job(
+            send_reminder,
+            trigger="date",
+            run_date=remind_at,
+            id=job_id,
+            replace_existing=True,
+        )
+    except Exception as e:
+        logger.error(f"Scheduling error: {e}")
